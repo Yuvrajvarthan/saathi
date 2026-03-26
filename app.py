@@ -7,8 +7,32 @@ import numpy as np
 import pickle
 import json
 from PIL import Image
-import tensorflow as tf
-from tensorflow.keras.preprocessing import image
+# Try to import deep learning libraries, but handle DLL errors gracefully
+PYTORCH_AVAILABLE = False
+TENSORFLOW_AVAILABLE = False
+
+try:
+    import torch
+    import torchvision.transforms as transforms
+    from PIL import Image as PILImage
+    PYTORCH_AVAILABLE = True
+    print("PyTorch loaded successfully!")
+except (ImportError, OSError) as e:
+    if "DLL" in str(e):
+        print("PyTorch DLL error - framework disabled")
+    else:
+        print("PyTorch not available")
+
+try:
+    import tensorflow as tf
+    from tensorflow.keras.preprocessing import image
+    TENSORFLOW_AVAILABLE = True
+    print("TensorFlow loaded successfully!")
+except ImportError:
+    print("TensorFlow not available")
+
+if not PYTORCH_AVAILABLE and not TENSORFLOW_AVAILABLE:
+    print("Running without deep learning framework - Crop recommendation only")
 import plotly.express as px
 import plotly.graph_objects as go
 import os
@@ -97,7 +121,10 @@ def load_crop_model():
 
 @st.cache_resource
 def load_disease_model():
-    """Load the disease detection model"""
+    """Load disease detection model"""
+    if not PYTORCH_AVAILABLE and not TENSORFLOW_AVAILABLE:
+        return None, None
+        
     try:
         # Check if model file exists
         model_path = "models/disease_model.h5"
@@ -106,13 +133,27 @@ def load_disease_model():
         if not os.path.exists(model_path):
             st.error(f"❌ Disease model not found at {model_path}")
             return None, None
-            
-        model = tf.keras.models.load_model(model_path)
         
-        with open(classes_path, 'r') as file:
-            class_names = json.load(file)
+        # Try loading with PyTorch first
+        if PYTORCH_AVAILABLE:
+            # For PyTorch, we'd need .pth file, but trying to load .h5
+            try:
+                import torch
+                model = torch.load(model_path.replace('.h5', '.pth'), map_location='cpu')
+                with open(classes_path, 'r') as file:
+                    class_names = json.load(file)
+                return model, class_names
+            except:
+                pass
+        
+        # Fallback to TensorFlow
+        if TENSORFLOW_AVAILABLE:
+            model = tf.keras.models.load_model(model_path)
+            with open(classes_path, 'r') as file:
+                class_names = json.load(file)
+            return model, class_names
             
-        return model, class_names
+        return None, None
     except Exception as e:
         st.error(f"❌ Error loading disease model: {str(e)}")
         return None, None
@@ -157,8 +198,24 @@ with tab1:
         
         # Prediction button
         if st.button("🔮 Recommend Crop", type="primary"):
-            # Create input array
+            # Create input array in the exact order of training features
             input_data = np.array([[nitrogen, phosphorus, potassium, temperature, humidity, ph, rainfall]])
+            
+            # Ensure the input order matches the training feature order
+            if crop_features:
+                # Reorder input to match training feature order
+                feature_order = crop_features  # ['N', 'P', 'K', 'temperature', 'humidity', 'ph', 'rainfall']
+                input_dict = {
+                    'N': nitrogen,
+                    'P': phosphorus, 
+                    'K': potassium,
+                    'temperature': temperature,
+                    'humidity': humidity,
+                    'ph': ph,
+                    'rainfall': rainfall
+                }
+                # Create input array in correct order
+                input_data = np.array([[input_dict[feature] for feature in feature_order]])
             
             # Make prediction
             try:
@@ -169,7 +226,7 @@ with tab1:
                 st.markdown('<div class="success-message">', unsafe_allow_html=True)
                 st.markdown("### 🎯 Recommended Crop")
                 st.markdown(f"**{prediction.upper()}**")
-                st.markdown(f"**Confidence: {confidence:.2f}%**")
+                st.markdown(f"**Model Confidence (Probability): {confidence:.2f}% based on Random Forest classification**")
                 st.markdown('</div>', unsafe_allow_html=True)
                 
                 # Additional insights
@@ -261,59 +318,70 @@ with tab2:
                 with col2:
                     st.markdown("#### 🔍 Analysis Results")
                     
-                    # Preprocess image
-                    img = image_data.resize((224, 224))
-                    img_array = image.img_to_array(img)
-                    img_array = img_array / 255.0  # Normalize
-                    img_array = np.expand_dims(img_array, axis=0)
-                    
-                    # Make prediction
-                    prediction = disease_model.predict(img_array)[0]
-                    predicted_class_idx = np.argmax(prediction)
-                    confidence = prediction[predicted_class_idx] * 100
-                    predicted_class = disease_classes[predicted_class_idx]
-                    
-                    # Display results
-                    if confidence > 70:
-                        st.markdown('<div class="success-message">', unsafe_allow_html=True)
-                        st.markdown(f"### 🎯 Detected: **{predicted_class}**")
-                        st.markdown(f"**Confidence: {confidence:.2f}%**")
-                        st.markdown('</div>', unsafe_allow_html=True)
-                    elif confidence > 50:
+                    if not TENSORFLOW_AVAILABLE:
                         st.markdown('<div class="warning-message">', unsafe_allow_html=True)
-                        st.markdown(f"### ⚠️ Possible: **{predicted_class}**")
-                        st.markdown(f"**Confidence: {confidence:.2f}%**")
-                        st.markdown("**Note: Low confidence - please provide a clearer image**")
+                        st.markdown("### ⚠️ TensorFlow Not Available")
+                        st.markdown("Disease detection requires TensorFlow which is not compatible with Python 3.14.")
+                        st.markdown("**Solutions:**")
+                        st.markdown("1. Use Python 3.10 or 3.11 for full functionality")
+                        st.markdown("2. Train disease model in Colab and deploy separately")
+                        st.markdown("3. Use cloud deployment for disease detection")
                         st.markdown('</div>', unsafe_allow_html=True)
                     else:
-                        st.markdown('<div class="error-message">', unsafe_allow_html=True)
-                        st.markdown(f"### ❌ Uncertain Detection")
-                        st.markdown(f"**Confidence: {confidence:.2f}%**")
-                        st.markdown("**Please upload a clearer, well-lit image of the leaf**")
-                        st.markdown('</div>', unsafe_allow_html=True)
+                        # Preprocess image
+                        img = image_data.resize((224, 224))
+                        img_array = image.img_to_array(img)
+                        img_array = img_array / 255.0  # Normalize
+                        img_array = np.expand_dims(img_array, axis=0)
+                        
+                        # Make prediction
+                        prediction = disease_model.predict(img_array)[0]
+                        predicted_class_idx = np.argmax(prediction)
+                        confidence = prediction[predicted_class_idx] * 100
+                        predicted_class = disease_classes[predicted_class_idx]
+                        
+                        # Display results
+                        if confidence > 70:
+                            st.markdown('<div class="success-message">', unsafe_allow_html=True)
+                            st.markdown(f"### 🎯 Detected: **{predicted_class}**")
+                            st.markdown(f"**Confidence: {confidence:.2f}%**")
+                            st.markdown('</div>', unsafe_allow_html=True)
+                        elif confidence > 50:
+                            st.markdown('<div class="warning-message">', unsafe_allow_html=True)
+                            st.markdown(f"### ⚠️ Possible: **{predicted_class}**")
+                            st.markdown(f"**Confidence: {confidence:.2f}%**")
+                            st.markdown("**Note: Low confidence - please provide a clearer image**")
+                            st.markdown('</div>', unsafe_allow_html=True)
+                        else:
+                            st.markdown('<div class="error-message">', unsafe_allow_html=True)
+                            st.markdown(f"### ❌ Uncertain Detection")
+                            st.markdown(f"**Confidence: {confidence:.2f}%**")
+                            st.markdown("**Please upload a clearer, well-lit image of the leaf**")
+                            st.markdown('</div>', unsafe_allow_html=True)
                 
                 # Show confidence distribution
-                st.markdown("### 📊 Confidence Distribution")
-                
-                # Create confidence chart
-                fig = go.Figure(data=[
-                    go.Bar(
-                        x=disease_classes,
-                        y=prediction * 100,
-                        text=[f"{conf:.2f}%" for conf in prediction * 100],
-                        textposition='auto',
+                if TENSORFLOW_AVAILABLE and disease_model is not None:
+                    st.markdown("### 📊 Confidence Distribution")
+                    
+                    # Create confidence chart
+                    fig = go.Figure(data=[
+                        go.Bar(
+                            x=disease_classes,
+                            y=prediction * 100,
+                            text=[f"{conf:.2f}%" for conf in prediction * 100],
+                            textposition='auto',
+                        )
+                    ])
+                    
+                    fig.update_layout(
+                        title="Model Confidence for Each Disease Class",
+                        xaxis_title="Disease Class",
+                        yaxis_title="Confidence (%)",
+                        xaxis_tickangle=-45,
+                        height=400
                     )
-                ])
-                
-                fig.update_layout(
-                    title="Model Confidence for Each Disease Class",
-                    xaxis_title="Disease Class",
-                    yaxis_title="Confidence (%)",
-                    xaxis_tickangle=-45,
-                    height=400
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
+                    
+                    st.plotly_chart(fig, use_container_width=True)
                 
                 # Disease information and recommendations
                 st.markdown("### 💡 Disease Information & Treatment")
@@ -387,7 +455,7 @@ st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666; padding: 20px;'>
     <p>🌾 <strong>Saathi - AI Crop Advisor</strong> | Empowering Indian Farmers with Technology</p>
-    <p><em>Built with ❤️ for Indian Agriculture | BE IT Semester 6 Mini-Project</em></p>
+    <p><em>Built with ❤️ for Indian Agriculture | VPVS </em></p>
 </div>
 """, unsafe_allow_html=True)
 
