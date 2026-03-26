@@ -87,8 +87,8 @@ This project is developed as a mini-project for BE IT Semester 6. Feel free to f
 
 ## 📧 Contact
 
-Developed by: [Your Name]  
-Email: [your.email@example.com]
+Developed by: Yuvrajvarthan  
+Email: yuvrajvarthannadar@gmail.com
 
 ---
 
